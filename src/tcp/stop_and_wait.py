@@ -144,3 +144,64 @@ class SocketTCP:
         print(f"Paquetes enviados: {self.packets_sent}")
         print(f"Paquetes recibidos: {self.packets_received}")
         print(f"Retransmisiones: {self.retransmissions}")
+    
+    @staticmethod
+    def parse_segment(segment):
+        """"
+        Parsea un segmento TCP recibido y extrae la info del header
+        """
+        if len(segment) < 5:
+            raise ValueError("Segmento TCP demasiado corto para parsear el header.")
+        
+        # Extraer header (5 bytes)
+        
+        seq_num = struct.unpack('B', segment[0:1])[0]
+        flags = struct.unpack('B', segment[1:2])[0]
+        payload_size = struct.unpack('!H', segment[2:4])[0]
+        checksum = struct.unpack('B', segment[4:5])[0]
+        
+        # Extraer payload
+        payload = segment[5:5+payload_size]
+        
+        # deco flags
+        ack_flag = bool(flags & 0x01) #0
+        syn_flag = bool(flags & 0x02) #1
+        fin_flag = bool(flags & 0x04) #2
+        
+        return {
+            'seq': seq_num,
+            'ack': ack_flag,
+            'syn': syn_flag,
+            'fin': fin_flag,
+            'payload_size': payload_size,
+            'payload': payload
+        }
+        
+    @staticmethod
+    def create_segment(seq, data, ack=False, syn=False, fin=False):
+        """
+        Crea un segmento TCP con header a partir de los datos
+        """
+        # construir flags
+        flags = 0
+        if ack:
+            flags |= 0x01
+        if syn:
+            flags |= 0x02
+        if fin:
+            flags |= 0x04
+            
+        # Tamaño payload
+        payload_size = len(data)
+        
+        # cacl checksum
+        checksum = (seq + flags + payload_size + sum(data)) % 256
+        
+        # construir header
+        header = struct.pack('B', seq)
+        header += struct.pack('B', flags)
+        header += struct.pack('!H', payload_size)
+        header += struct.pack('B', checksum)
+        
+        # Retornar seg completo
+        return header + data
