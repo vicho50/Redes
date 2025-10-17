@@ -205,3 +205,114 @@ class SocketTCP:
         
         # Retornar seg completo
         return header + data
+    
+    def connect(self, address):
+        """
+        Configura la direccion remota para el socket
+
+        Args:
+            address: Tuple (host, port)
+        """
+        self.remote_address = address
+        
+        import random
+        self.remote_address = address
+        print(f"[CONNECT] Iniciando 3-way handshake con {address}")
+        # Paso 1: Enviar SYN
+        self.seq_num = random.randint(0, 100)
+        syn_segment = self.create_segment(
+            seq=self.seq_num,
+            data=b"",
+            syn=True
+        )
+        
+        print(f"[CONNECT] Enviando SYN con Seq: {self.seq_num}")
+        self.socket.sendto(syn_segment, self.remote_address)
+        
+        # Paso 2: Esperar SYN-ACK
+        try:
+            self.socket.settimeout(5.0)
+            response, _ = self.socket.recvfrom(self.buffer_size)
+            syn_ack_info = self.parse_segment(response)
+            
+            if syn_ack_info['syn'] and syn_ack_info['ack'] and syn_ack_info['seq'] == self.seq_num:
+                print(f"[CONNECT] Recibido SYN-ACK con Seq: {syn_ack_info['seq']}")
+                
+                # Guardar el seq del servidor
+                self.remote_seq = syn_ack_info['seq']
+                
+                # Paso 3: Enviar ACK
+                # con seq = 0 para comenzar a enviar data
+                self.seq_num = 0
+                ack_segment = self.create_segment(
+                    seq=self.seq_num,
+                    data=b"",
+                    ack=True
+                )
+                
+                print(f"[CONNECT] Enviando ACK final")
+                self.socket.sendto(ack_segment, self.remote_address)
+                
+                print(f"[CONNECT] Conexión establecida con {address}")
+                return True
+            else:
+                print(f"[CONNECT] Respuesta inválida durante el handshake.")
+                return False
+        except socket.timeout:
+            print(f"[CONNECT] Timeout esperando SYN-ACK.")
+            return False
+    
+    def accept(self):
+        """
+        Espera y acepta una conexión entrante (3-way handshake)
+        """
+        import random
+        print(f"[ACCEPT] Esperando conexión entrante...")
+        
+        # Paso 1: Esperar SYN
+        while True:
+            segment, client_address = self.socket.recvfrom(self.buffer_size)
+            syn_info = self.parse_segment(segment)
+            
+            if syn_info['syn']:
+                
+                print(f"[ACCEPT] Recibido SYN con Seq: {syn_info['seq']} desde {client_address}")
+                
+                # guardar seq cliente
+                client_seq = syn_info['seq']
+                
+                # Paso 2: Enviar SYN-ACK con seq aleatorio
+                server_seq = random.randint(0, 100)
+                syn_ack_segment = self.create_segment(
+                    seq=server_seq,
+                    data=b"",
+                    syn=True,
+                    ack=True
+                )
+                
+                print(f"[ACCEPT] Enviando SYN-ACK con Seq: {server_seq} a {client_address}")
+                self.socket.sendto(syn_ack_segment, client_address)
+                
+                # Paso 3: Esperar ACK final
+                try:
+                    self.socket.settimeout(5.0)
+                    ack_segment, _ = self.socket.recvfrom(self.buffer_size)
+                    ack_info = self.parse_segment(ack_segment)
+                    
+                    if ack_info['ack']:
+                        print(f"[ACCEPT] ACK final recibido)")
+                        
+                        # Crear nuevo socket para la conexión
+                        connection_socket = SocketTCP()
+                        connection_socket.remote_address = client_address
+                        connection_socket.seq_num = 0
+                        connection_socket.socket = self.socket
+                        connection_socket.local_address = self.local_address
+                        
+                        print(f"[ACCEPT] Conexión establecida con {client_address}")
+                        return connection_socket, client_address
+                    else:
+                        print(f"[ACCEPT] Respuesta inválida durante el handshake.")
+                except socket.timeout:
+                    print(f"[ACCEPT] Timeout esperando ACK final.")
+                    continue
