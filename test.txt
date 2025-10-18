@@ -1,1 +1,1 @@
-Mensaje de prueba para handshake
+Este es un mensaje de prueba más largo para ver múltiples chunks de 16 bytes funcionando correctamente.

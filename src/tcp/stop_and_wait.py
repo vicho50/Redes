@@ -12,7 +12,7 @@ class SocketTCP:
         Constructor sin parametros
         Inicializa todos los recursos necesarios para entablas una interacción que busca el paso de informacion de una parte a la otra AKA comunicación
         """
-        # Socket UDP
+        # Socket TCP
         self.socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         
         # Direcciones
@@ -45,97 +45,190 @@ class SocketTCP:
         self.local_address = address
         
         
-    def send(self, data):
+    def send(self, message):
         """
-        Envia datos de manera confiable al address remoto previamente configurado
-        Espera ACK
+        Envía un mensaje completo dividiéndolo en chunks con Stop & Wait.
 
         Args:
-            data: bytes a enviar
+            message: bytes - Mensaje completo a enviar
             
         Returns:
-            True si funca, False si no
+            True si se envió exitosamente, False si falló
         """
         if not self.remote_address:
             raise ValueError("Dirección remota no configurada.")
         
-        # crear pack
-        packet = struct.pack('B', self.seq_num) + data
+        # paso 1: enviar largo del msg
+        message_length = len(message)
+        length_data = struct.pack('!I', message_length)
         
+        print(f"[SEND] Enviando longitud del mensaje: {message_length} bytes")
+        
+        # Crear y enviar segmento de longitud
+        length_segment = self.create_segment(
+            seq=self.seq_num,
+            data=length_data,
+            ack=False
+        )
+        
+        # Enviar con retransmisiones
+        
+        if not self._send_with_retry(length_segment):
+            print(f"[SEND] Error enviando longitud del mensaje.")
+            return False
+        
+        # paso 2: enviar data en chunks
+        CHUNK_SIZE = 16
+        offset = 0
+        chunk_number = 0
+        
+        while offset < message_length:
+            # extraer chunk
+            chunk = message[offset:offset+CHUNK_SIZE]
+            
+            print(f"[SEND] Enviando chunk {chunk_number}: {len(chunk)} bytes (offset {offset})")
+            
+            # crear segmento con el chunk
+            data_segment = self.create_segment(
+                seq=self.seq_num,
+                data=chunk,
+                ack=False
+            )
+            
+            # Enviar con retransmisiones
+            if not self._send_with_retry(data_segment):
+                print(f"[SEND] Error enviando chunk {chunk_number}.")
+                return False
+            
+            offset += len(chunk)
+            chunk_number += 1
+        
+        print(f"[SEND] Mensaje enviado exitosamente.")
+        return True
+    
+    def _send_with_retry(self, segment):
+        """
+        Método auxiliar para enviar un segmento con retransmisiones y timeout
+        
+        Args:
+            segment: bytes - Segmento completo
+            
+        Returns:
+            True si se envió y recibió ACK, False si falló
+        """
         retries = 0
-        while retries < self.max_retrys:
+        
+        while retries <= self.max_retrys:
             try:
-                # mandar pack
-                self.socket.sendto(packet, self.remote_address)
+                # Enviar segmento
+                self.socket.sendto(segment, self.remote_address)
                 self.packets_sent += 1
-                print(f"[SEND] Seq: {self.seq_num}, Retries: {retries}, Size: {len(data)} bytes")
                 
-                # confi Tout para el ACK
+                # timout
                 self.socket.settimeout(self.timout)
                 
-                # waiteamos el ACK
-                ack_packet, _ = self.socket.recvfrom(self.buffer_size)
-                ack_seq = struct.unpack('B', ack_packet[:1])[0]
+                # Esperar ACK
+                ack_segment, _ = self.socket.recvfrom(self.buffer_size)
+                ack_info = self.parse_segment(ack_segment)
                 
-                # chequeamos que el ACK sea el correcto
-                if ack_seq == self.seq_num:
-                    print(f"[ACK] Seq: {ack_seq} recibido correctamente.")
-                    self.seq_num = 1 - self.seq_num  # Alternar entre 0 y 1 (S&W)
+                # Verificar ACK
+                if ack_info['ack'] and ack_info['seq'] == self.seq_num:
+                    print(f"[SEND] Recibido ACK para Seq: {self.seq_num}")
+                    # Actualizar n° de seq
+                    self.seq_num = 1 - self.seq_num 
                     return True
                 else:
-                    print(f"[ACK] Seq: {ack_seq} incorrecto, esperando {self.seq_num}.")
+                    print(f"[SEND] ACK inválido recibido. Esperando Seq: {self.seq_num}")
             
             except socket.timeout:
                 retries += 1
                 self.retransmissions += 1
-                print(f"[TIMEOUT] Retransmitiendo paquete con Seq: {self.seq_num}. Intento {retries}/{self.max_retrys}")
+                print(f"[SEND] timeout esperando ACK. Retransmisión {retries}/{self.max_retrys}")
         
-        print(f"[FAIL] No se pudo enviar el paquete con Seq: {self.seq_num} después de {self.max_retrys} intentos.")
+        print(f"[SEND] Máximo de retransmisiones alcanzado. Fallo al enviar segmento.")
         return False
+                
+                
+            
     
-    def recv(self, max_bytes=16):
+    def recv(self, buff_size=1024):
         """
-        Recibe la data de forma confiable
-        Envía ACK auto
+        Recibe un mensaje completo usando Stop & Wait
         
         Args:
-            max_bytes: maximo de bytes a recibir
+            buff_size: int - Tamaño del buffer para recibir datos
         
         Returns:
-            bytes recibidos (sin el header de secuencia)
+            bytes - Mensaje recibido
         """
         
-        # N° de seq esperado (parte en 0)
+       # Inicializar N° de seq esperado
         if not hasattr(self, 'expected_seq'):
-            self.expected_seq = 0
+           self.expected_seq = 0
         
+        # paso 1: recibir largo del mensaje
+        print(f"[RECV] Esperando longitud del mensaje...")
+        length_data = self._recv_segment()
+        if len(length_data) < 4:
+            raise ValueError("Error recibiendo longitud del mensaje.")
+        
+        mesage_length = struct.unpack('!I', length_data[:4])[0]
+        print(f"[RECV] Longitud del mensaje recibida: {mesage_length} bytes")
+        
+        # paso 2: recibir data en chunks
+        received_data = b""
+        chunk_number = 0
+        
+        while len(received_data) < mesage_length:
+            chunk = self._recv_segment()
+            received_data += chunk
+            chunk_number += 1
+            print(f"[RECV] Chunk {chunk_number} recibido: {len(chunk)} bytes")
+        
+        print(f"[RECV] Mensaje recibido exitosamente.")
+        
+        return received_data[:buff_size]
+        
+    
+    def _recv_segment(self):
+        """
+        Método auxiliar para recibir un segmento y enviar ACK
+        
+        Returns:
+            bytes - Payload del segmento recibido
+        """
         while True:
-            # recibir pack
-            packet, sender_address = self.socket.recvfrom(self.buffer_size)
+            # Recibir segmento
+            segment, sender_address = self.socket.recvfrom(self.buffer_size)
             self.packets_received += 1
-            
-            # guarda la direccion del remitente si no ta etablecida
+
+            # Guardar dirección remota
             if not self.remote_address:
                 self.remote_address = sender_address
-                
-            # extraer n° de seq y data
-            seq_num = struct.unpack('B', packet[:1])[0]
-            data = packet[1:]
-            print(f"[RECV] Seq: {seq_num}, Size: {len(data)} bytes, desde: {sender_address}")
             
-            # mandar ACK con el n° de seq recibido
-            ack_packet = struct.pack('B', seq_num)
-            self.socket.sendto(ack_packet, sender_address)
-            print(f"[ACK] Enviando ACK para Seq: {seq_num}")
+            # Parsear segmento
+            segment_info = self.parse_segment(segment)
+            seq_num = segment_info['seq']
+            payload = segment_info['payload']
             
-            # Si es el pack esperado, retornar data y actualizar n° de seq esperado
+            # Enviar ACK
+            ack_segment = self.create_segment(
+                seq=seq_num,
+                data=b"",
+                ack=True
+            )
+            self.socket.sendto(ack_segment, sender_address)
+
+            #si es el esperado, retornarlo
             if seq_num == self.expected_seq:
-                self.expected_seq = 1 - self.expected_seq  # Alternar entre 0 y 1
-                return data
+                self.expected_seq = 1 - self.expected_seq
+                return payload
             else:
-                print(f"[DUPLICATE] Paquete duplicado con Seq: {seq_num} recibido, esperando {self.expected_seq}. Ignorando data.")
-                # Si es duplicado, simplemente ignorar la data (ACK ya fue enviado)
+                # Paquete duplicado, ignorar pero ACK ya fue enviado
+                print(f"[DUP] Paquete duplicado Seq={seq_num}, esperado={self.expected_seq}.")
                 continue
+
+
     def close(self):
         """
         Cierra el socket y libera recursos

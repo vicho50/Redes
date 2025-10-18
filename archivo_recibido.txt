@@ -1,6 +1,19 @@
-Servidor UDP escuchando en localhost:5000
-
-Servidor detenido por el usuario.
+Este es un mensaje de prueba más largo para ver múltiples chunks de 16 bytes funcionando correctamente.
+[ACCEPT] Esperando conexión entrante...
+[ACCEPT] Recibido SYN con Seq: 43 desde ('127.0.0.1', 37238)
+[ACCEPT] Enviando SYN-ACK con Seq: 76 a ('127.0.0.1', 37238)
+[ACCEPT] ACK final recibido)
+[ACCEPT] Conexión establecida con ('127.0.0.1', 37238)
+[RECV] Esperando longitud del mensaje...
+[RECV] Longitud del mensaje recibida: 106 bytes
+[RECV] Chunk 1 recibido: 16 bytes
+[RECV] Chunk 2 recibido: 16 bytes
+[RECV] Chunk 3 recibido: 16 bytes
+[RECV] Chunk 4 recibido: 16 bytes
+[RECV] Chunk 5 recibido: 16 bytes
+[RECV] Chunk 6 recibido: 16 bytes
+[RECV] Chunk 7 recibido: 10 bytes
+[RECV] Mensaje recibido exitosamente.
 Paquetes enviados: 0
-Paquetes recibidos: 0
+Paquetes recibidos: 8
 Retransmisiones: 0
