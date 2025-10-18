@@ -196,6 +196,8 @@ class SocketTCP:
         Returns:
             bytes - Payload del segmento recibido
         """
+        
+        self.socket.settimeout(None)  
         while True:
             # Recibir segmento
             segment, sender_address = self.socket.recvfrom(self.buffer_size)
@@ -372,16 +374,23 @@ class SocketTCP:
     
     def connect(self, address):
         """
-        Configura la direccion remota para el socket
+        Inicia la conexión con el servidor usando 3-way handshake (lado del cliente).
+        Maneja pérdidas con retransmisiones.
 
         Args:
-            address: Tuple (host, port)
+            address: Tupla (host, port) del servidor
+            
+        Returns:
+            True si conexión exitosa, False si falla
         """
-        self.remote_address = address
         
         import random
         self.remote_address = address
         print(f"[CONNECT] Iniciando 3-way handshake con {address}")
+        
+        # de nuevo esta vaina de perdida ZZZ
+        SIMULATE_LOSS = True
+        LOSS_RATE = 0.3
         # Paso 1: Enviar SYN
         self.seq_num = random.randint(0, 100)
         syn_segment = self.create_segment(
@@ -390,62 +399,98 @@ class SocketTCP:
             syn=True
         )
         
-        print(f"[CONNECT] Enviando SYN con Seq: {self.seq_num}")
-        self.socket.sendto(syn_segment, self.remote_address)
+        retries = 0
+        max_syn_retries = self.max_retries
         
-        # Paso 2: Esperar SYN-ACK
-        try:
-            self.socket.settimeout(5.0)
-            response, _ = self.socket.recvfrom(self.buffer_size)
-            syn_ack_info = self.parse_segment(response)
+        while retries < max_syn_retries:
+            try:
+                print(f"[CONNECT] Enviando SYN con Seq: {self.seq_num}")
+                if SIMULATE_LOSS and self._simulate_packet_loss(LOSS_RATE):
+                    print(f"[SIMULATED LOSS] SYN perdido intencionalmente")
+                    raise socket.timeout("Pérdida simulada de SYN")
+                self.socket.sendto(syn_segment, self.remote_address)
+
+                # Paso 2: Esperar SYN-ACK
+                self.socket.settimeout(5.0)
+                response, _ = self.socket.recvfrom(self.buffer_size)
+                syn_ack_info = self.parse_segment(response)
             
-            if syn_ack_info['syn'] and syn_ack_info['ack']:
-                print(f"[CONNECT] Recibido SYN-ACK con Seq: {syn_ack_info['seq']}")
+                if syn_ack_info['syn'] and syn_ack_info['ack']:
+                    print(f"[CONNECT] Recibido SYN-ACK con Seq: {syn_ack_info['seq']}")
+                    
+                    # Guardar el seq del servidor
+                    self.remote_seq = syn_ack_info['seq']
                 
-                # Guardar el seq del servidor
-                self.remote_seq = syn_ack_info['seq']
+                    # Paso 3: Enviar ACK
+                    # con seq = 0 para comenzar a enviar data
+                    self.seq_num = 0
+                    ack_segment = self.create_segment(
+                        seq=self.seq_num,
+                        data=b"",
+                        ack=True
+                    )
+                    
+                    print(f"[CONNECT] Enviando ACK final")
+                    if SIMULATE_LOSS and self._simulate_packet_loss(LOSS_RATE):
+                        print(f"[SIMULATED LOSS] ACK final perdido intencionalmente")
+                        # No enviamos el ACK, pero seguimos escuchando por SYN-ACK duplicado
+                    else:
+                        self.socket.sendto(ack_segment, self.remote_address)
+                    
+                    # Caso borde: quedarse escuchando por si el servidor reenvía el SYN-ACK
+                    try:
+                        self.socket.settimeout(1.0)
+                        dup_response, _ = self.socket.recvfrom(self.buffer_size)
+                        dup_info = self.parse_segment(dup_response)
+                        if dup_info['syn'] and dup_info['ack']:
+                            print(f"[CONNECT] Recibido SYN-ACK duplicado, reenviando ACK final")
+                            self.socket.sendto(ack_segment, self.remote_address)
+                    except socket.timeout:
+                        pass
+                    
+                    print(f"[CONNECT] Conexión establecida con {address}")
+                    return True
+                else:
+                    print(f"[CONNECT] Respuesta inválida durante el handshake.")
+                    retries += 1
+            
+            except socket.timeout:
+                retries += 1
+                print(f"[CONNECT] Timeout esperando SYN-ACK. Retransmisión {retries}/{max_syn_retries}")
                 
-                # Paso 3: Enviar ACK
-                # con seq = 0 para comenzar a enviar data
-                self.seq_num = 0
-                ack_segment = self.create_segment(
-                    seq=self.seq_num,
-                    data=b"",
-                    ack=True
-                )
-                
-                print(f"[CONNECT] Enviando ACK final")
-                self.socket.sendto(ack_segment, self.remote_address)
-                
-                print(f"[CONNECT] Conexión establecida con {address}")
-                return True
-            else:
-                print(f"[CONNECT] Respuesta inválida durante el handshake.")
-                return False
-        except socket.timeout:
-            print(f"[CONNECT] Timeout esperando SYN-ACK.")
-            return False
+        print(f"[CONNECT] Fallo al establecer conexión después de {max_syn_retries} intentos.")
+        return False
+
+
     
     def accept(self):
         """
-        Espera y acepta una conexión entrante (3-way handshake)
+        Espera y acepta una conexión usando 3-way handshake (lado del servidor).
+        Maneja pérdidas con retransmisiones.
+        
+        Returns:
+            (SocketTCP, address): Nuevo socket para la conexión y dirección del cliente
         """
         import random
-        print(f"[ACCEPT] Esperando conexión entrante...")
         
-        # Paso 1: Esperar SYN
+        print(f"[ACCEPT] Esperando conexión...")
+        
+        # Perdiendo la cabeza en hd chavales
+        SIMULATE_LOSS = True
+        LOSS_RATE = 0.3
+        
+        # Paso 1: Esperar SYN del cliente
         while True:
             segment, client_address = self.socket.recvfrom(self.buffer_size)
             syn_info = self.parse_segment(segment)
             
             if syn_info['syn']:
+                print(f"[ACCEPT] SYN recibido de {client_address} con Seq={syn_info['seq']}")
                 
-                print(f"[ACCEPT] Recibido SYN con Seq: {syn_info['seq']} desde {client_address}")
-                
-                # guardar seq cliente
+                # Guardar seq del cliente
                 client_seq = syn_info['seq']
                 
-                # Paso 2: Enviar SYN-ACK con seq aleatorio
+                # Paso 2: Enviar SYN-ACK con seq aleatorio del servidor
                 server_seq = random.randint(0, 100)
                 syn_ack_segment = self.create_segment(
                     seq=server_seq,
@@ -454,30 +499,74 @@ class SocketTCP:
                     ack=True
                 )
                 
-                print(f"[ACCEPT] Enviando SYN-ACK con Seq: {server_seq} a {client_address}")
-                self.socket.sendto(syn_ack_segment, client_address)
+                # Intentar establecer conexión con reintentos
+                retries = 0
+                max_ack_retries = self.max_retries
                 
-                # Paso 3: Esperar ACK final
-                try:
-                    self.socket.settimeout(5.0)
-                    ack_segment, _ = self.socket.recvfrom(self.buffer_size)
-                    ack_info = self.parse_segment(ack_segment)
-                    
-                    if ack_info['ack']:
-                        print(f"[ACCEPT] ACK final recibido)")
+                while retries < max_ack_retries:
+                    try:
+                        print(f"[ACCEPT] Enviando SYN-ACK con Seq={server_seq} (intento {retries + 1}/{max_ack_retries})")
+                        # *** SIMULACIÓN DE PÉRDIDA EN SYN-ACK ***
+                        if SIMULATE_LOSS and self._simulate_packet_loss(LOSS_RATE):
+                            print(f"[SIMULATED LOSS] SYN-ACK perdido intencionalmente")
+                            raise socket.timeout("Pérdida simulada de SYN-ACK")
                         
-                        # Crear nuevo socket para la conexión
-                        connection_socket = SocketTCP()
-                        connection_socket.remote_address = client_address
-                        connection_socket.seq_num = 0
-                        connection_socket.socket = self.socket
-                        connection_socket.local_address = self.local_address
+                        self.socket.sendto(syn_ack_segment, client_address)
                         
-                        print(f"[ACCEPT] Conexión establecida con {client_address}")
-                        return connection_socket, client_address
-                    else:
-                        print(f"[ACCEPT] Respuesta inválida durante el handshake.")
-                        continue
-                except socket.timeout:
-                    print(f"[ACCEPT] Timeout esperando ACK final.")
-                    continue
+                        # Paso 3: Esperar ACK final del cliente
+                        self.socket.settimeout(self.timeout)
+                        ack_segment, ack_address = self.socket.recvfrom(self.buffer_size)
+                        ack_info = self.parse_segment(ack_segment)
+                        
+                        # Verificar que viene del mismo cliente
+                        if ack_address != client_address:
+                            print(f"[ACCEPT] ACK de dirección diferente, ignorando")
+                            continue
+                        
+                        if ack_info['ack']:
+                            print(f"[ACCEPT] ACK final recibido con Seq={ack_info['seq']}")
+                            
+                            # Crear nuevo socket para esta conexión
+                            connection_socket = SocketTCP()
+                            connection_socket.remote_address = client_address
+                            connection_socket.seq_num = 0  # Comenzar en 0 para datos
+                            connection_socket.expected_seq = 0
+                            connection_socket.socket = self.socket
+                            connection_socket.local_address = self.local_address
+                            
+                            connection_socket.timeout = 2.0
+                            connection_socket.max_retries = 5
+                            connection_socket.buffer_size = 1024
+                            
+                            print(f"[ACCEPT]  Conexión establecida con {client_address}")
+                            return connection_socket, client_address
+                        
+                        elif ack_info['syn']:
+                            # Recibió otro SYN (el cliente retransmitió porque no recibió SYN-ACK)
+                            print(f"[ACCEPT] SYN duplicado recibido, reenviando SYN-ACK")
+                            retries += 1
+                            continue
+                        
+                    except socket.timeout:
+                        print(f"[ACCEPT] Timeout esperando ACK, retransmitiendo SYN-ACK...")
+                        retries += 1
+                        self.retransmissions += 1
+                
+                # Si no se recibe ACK después de todos los intentos, volver a esperar SYN
+                print(f"[ACCEPT]  No se recibió ACK después de {max_ack_retries} intentos")
+                print(f"[ACCEPT] Volviendo a esperar nueva conexión...")
+                continue
+            
+    def _simulate_packet_loss(self, loss_rate=0.2):
+        """
+        Simula pérdida de paquetes para testing.
+        
+        Args:
+            loss_rate: Probabilidad de pérdida (0.2 = 20%)
+            
+        Returns:
+            True si el paquete se "pierde", False si pasa
+        """
+        import random
+        return random.random() < loss_rate
+    
