@@ -1,1 +1,6 @@
-echo "Hola bla bla bla bla bla" > test.txt
+Servidor UDP escuchando en localhost:5000
+
+Servidor detenido por el usuario.
+Paquetes enviados: 0
+Paquetes recibidos: 0
+Retransmisiones: 0

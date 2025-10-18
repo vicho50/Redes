@@ -14,7 +14,7 @@ def main():
     # BORRA DSP BENJA acá se crea el socket UDP
     client_socket = SocketTCP()
     
-    if not client_socket.set_remote_address((HOST, PORT)):
+    if not client_socket.connect((HOST, PORT)):
         print("Error estableciendo la dirección remota del servidor.")
         return
     
@@ -42,24 +42,15 @@ def main():
                     data=chunk,
                 )
                 
-                print(f"[CLIENT] Envando chunk {chunk_number}: {len(chunk)} bytes")
+                # Enviar chunk usando el método send() de SocketTCP
+                print(f"[CLIENT] Enviando chunk {chunk_number}: {len(chunk)} bytes")
                 
-                client_socket.socket.sendto(segment, client_socket.remote_address)
+                if client_socket.send(chunk):
+                    print(f"[CLIENT] Chunk {chunk_number} enviado exitosamente")
+                else:
+                    print(f"[CLIENT] Error enviando chunk {chunk_number}")
+                    break
                 
-                # Esperar ACK
-                try:
-                    client_socket.socket.settimeout(2.0)
-                    ack_segment, _ = client_socket.socket.recvfrom(1024)
-                    
-                    #Parsear ACK
-                    ack_info = SocketTCP.parse_segment(ack_segment)
-                    if ack_info['ack'] and ack_info['seq'] == client_socket.seq_num:
-                        print(f"[CLIENT] ACK recibido para seq={client_socket.seq_num}")
-                        # alterar numero de secuencia
-                        client_socket.seq_num = 1 - client_socket.seq_num
-                except socket.timeout:
-                    print(f"[CLIENT] timout esperando ACK")
-                    
                 chunk_number += 1
                
         # No te voy a mentir el debug se autocompleto

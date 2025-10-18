@@ -235,7 +235,7 @@ class SocketTCP:
             response, _ = self.socket.recvfrom(self.buffer_size)
             syn_ack_info = self.parse_segment(response)
             
-            if syn_ack_info['syn'] and syn_ack_info['ack'] and syn_ack_info['seq'] == self.seq_num:
+            if syn_ack_info['syn'] and syn_ack_info['ack']:
                 print(f"[CONNECT] Recibido SYN-ACK con Seq: {syn_ack_info['seq']}")
                 
                 # Guardar el seq del servidor
@@ -313,6 +313,7 @@ class SocketTCP:
                         return connection_socket, client_address
                     else:
                         print(f"[ACCEPT] Respuesta inválida durante el handshake.")
+                        continue
                 except socket.timeout:
                     print(f"[ACCEPT] Timeout esperando ACK final.")
                     continue

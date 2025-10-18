@@ -3,7 +3,7 @@ import sys
 from tcp.stop_and_wait import SocketTCP
 
 def main():
-    # ola configurazao socket UDP
+    # ola configurazao socket TCP
     HOST = 'localhost'
     PORT = 5000
    # BUFFER_SIZE = 1024
@@ -11,7 +11,11 @@ def main():
     #CREO LA VAINA
     server_socket = SocketTCP()
     server_socket.bind((HOST, PORT))
-    print(f"Servidor UDP escuchando en {HOST}:{PORT}")
+    print(f"Servidor TCP escuchando en {HOST}:{PORT}")
+    
+    # 3-way handshake
+    connection_socket, client_address = server_socket.accept()
+    print(f"Conexión establecida con {client_address}")
     
     try:
         packet_count = 0
