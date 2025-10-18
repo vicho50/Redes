@@ -22,10 +22,10 @@ class SocketTCP:
         # N° seq
         self.seq_num = 0
         
-        # Tout y retransmisiones
-        self.timout = 2.0
-        self.max_retrys = 5
-        
+        # Timeout y retransmisiones
+        self.timeout = 2.0
+        self.max_retries = 5
+
         # Buffer
         self.buffer_size = 1024
         
@@ -118,14 +118,13 @@ class SocketTCP:
         """
         retries = 0
         
-        while retries <= self.max_retrys:
+        while retries <= self.max_retries:
             try:
                 # Enviar segmento
                 self.socket.sendto(segment, self.remote_address)
                 self.packets_sent += 1
-                
-                # timout
-                self.socket.settimeout(self.timout)
+                # timeout
+                self.socket.settimeout(self.timeout)
                 
                 # Esperar ACK
                 ack_segment, _ = self.socket.recvfrom(self.buffer_size)
@@ -143,7 +142,7 @@ class SocketTCP:
             except socket.timeout:
                 retries += 1
                 self.retransmissions += 1
-                print(f"[SEND] timeout esperando ACK. Retransmisión {retries}/{self.max_retrys}")
+                print(f"[SEND] timeout esperando ACK. Retransmisión {retries}/{self.max_retries}")
         
         print(f"[SEND] Máximo de retransmisiones alcanzado. Fallo al enviar segmento.")
         return False
@@ -231,12 +230,84 @@ class SocketTCP:
 
     def close(self):
         """
-        Cierra el socket y libera recursos
+        Cierra la conexión de forma ordenada, envía FIN al recepetor
         """
+        if self.remote_address:
+            print(f"[CLOSE] Enviando FIN para cerrar la conexión.")
+            fin_segment = self.create_segment(
+                seq=self.seq_num,
+                data=b"",
+                fin=True
+            )
+             # Enviar FIN con reintentos
+            retries = 0
+            while retries <= self.max_retries:
+                try:
+                     print(f"[CLOSE] Enviando FIN con seq: {self.seq_num}")
+                     self.socket.sendto(fin_segment, self.remote_address)
+                     
+                     # Esperar ACK de FIN
+                     self.socket.settimeout(self.timeout)
+                     ack_segment, _ = self.socket.recvfrom(self.buffer_size)
+                     ack_info = self.parse_segment(ack_segment)
+                     
+                     if ack_info['ack'] and ack_info['seq'] == self.seq_num:
+                         print(f"[CLOSE] ACK de FIN recibido. Conexión cerrada.")
+                         break
+                except socket.timeout:
+                     retries += 1
+                     print(f"[CLOSE] Timeout esperando ACK de FIN. Retransmisión {retries}/{self.max_retries}")
+            if retries > self.max_retries:
+                print(f"[CLOSE] No se recibió ACK de FIN. Cerrando socket de todas formas.")
         self.socket.close()
         print(f"Paquetes enviados: {self.packets_sent}")
         print(f"Paquetes recibidos: {self.packets_received}")
         print(f"Retransmisiones: {self.retransmissions}")
+        print(f"[CLOSE] Socket cerrado.")
+    
+    def recv_close(self):
+        """
+        Maneja el cierre de conexión desde el lado del servidor al recibir FIN
+        
+        Returns:
+            True si se recibió FIN del cliente, False en caso contrario
+        """
+        print(f"[RECV_CLOSE] Esperando FIN del cliente...")
+        
+        try:
+            # Configurar timeout largo para esperar FIN
+            self.socket.settimeout(10.0)
+            
+            while True:
+                # Recibir segmento
+                segment, sender_address = self.socket.recvfrom(self.buffer_size)
+                segment_info = self.parse_segment(segment)
+                
+                # verificar si es FIN
+                if segment_info['fin']:
+                    seq_num = segment_info['seq']
+                    print(f"[RECV_CLOSE] FIN recibido con Seq: {seq_num}")
+                    
+                    # Enviar ACK de FIN
+                    ack_segment = self.create_segment(
+                        seq=seq_num,
+                        data=b"",
+                        ack=True
+                    )
+                    self.socket.sendto(ack_segment, sender_address)
+                    print(f"[RECV_CLOSE] Enviado ACK de FIN.")
+                    return True
+                else:
+                    # Si recibe otros paquetes, segior esperando
+                    print(f"[RECV_CLOSE] Paquete recibido que no es FIN, ignorando.")
+                    continue
+        except socket.timeout:
+            print(f"[RECV_CLOSE] Timeout esperando FIN del cliente.")
+            return False
+        except Exception as e:
+            print(f"[RECV_CLOSE] Error: {e}")
+            return False
+        
     
     @staticmethod
     def parse_segment(segment):
