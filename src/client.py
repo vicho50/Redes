@@ -13,7 +13,10 @@ def main():
     
     # BORRA DSP BENJA acá se crea el socket UDP
     client_socket = SocketTCP()
-    client_socket.set_remote_address((HOST, PORT))
+    
+    if not client_socket.set_remote_address((HOST, PORT)):
+        print("Error estableciendo la dirección remota del servidor.")
+        return
     
     try:
         # AYYY BENJAAAAA lee la ruta del archivoooo pero desde la entrada estándar
@@ -32,20 +35,16 @@ def main():
                 if not chunk:
                     break
                 
-                """
-                Crear segmento TCP con header
-                """
+                
+                # Crear y enviar segmento
                 segment = SocketTCP.create_segment(
-                    seq = client_socket.seq_num,
-                    data = chunk,
-                    ack = False,
-                    syn = False,
-                    fin = False,
+                    seq=client_socket.seq_num,
+                    data=chunk,
                 )
                 
                 print(f"[CLIENT] Envando chunk {chunk_number}: {len(chunk)} bytes")
                 
-                client_socket.socket.sendto(segment, (HOST, PORT))
+                client_socket.socket.sendto(segment, client_socket.remote_address)
                 
                 # Esperar ACK
                 try:
