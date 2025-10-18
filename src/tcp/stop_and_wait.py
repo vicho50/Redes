@@ -242,8 +242,10 @@ class SocketTCP:
                 fin=True
             )
              # Enviar FIN con reintentos
+            max_fin_attempts = 3
+            ack_received = False
             retries = 0
-            while retries <= self.max_retries:
+            while retries < max_fin_attempts:
                 try:
                      print(f"[CLOSE] Enviando FIN con seq: {self.seq_num}")
                      self.socket.sendto(fin_segment, self.remote_address)
@@ -255,12 +257,35 @@ class SocketTCP:
                      
                      if ack_info['ack'] and ack_info['seq'] == self.seq_num:
                          print(f"[CLOSE] ACK de FIN recibido. Conexión cerrada.")
+                         ack_received = True
                          break
+                     else:
+                         print(f"[CLOSE] ACK de FIN inválido recibido.")
+                         retries += 1
                 except socket.timeout:
                      retries += 1
                      print(f"[CLOSE] Timeout esperando ACK de FIN. Retransmisión {retries}/{self.max_retries}")
-            if retries > self.max_retries:
-                print(f"[CLOSE] No se recibió ACK de FIN. Cerrando socket de todas formas.")
+            if ack_received:
+                print(f"[CLOSE] reenviando ultimo ACK 3 veces para asegurar cierre")
+                final_ack = self.create_segment(
+                    seq=self.seq_num,
+                    data=b"",
+                    ack=True
+                )
+                for i in range(3):
+                    try:
+                        print(f"[CLOSE] Reenvío {i+1}/3 del último ACK de cierre.")                    
+                        self.socket.sendto(final_ack, self.remote_address)
+                        
+                        import time
+                        time.sleep(self.timeout)
+                    except Exception as e:
+                        print(f"[CLOSE] Error al reenviar ACK de cierre: {e}")
+                print(f"[CLOSE] Cierre de conexión finalizado.")
+            else:
+                print(f"[CLOSE] No se recibió ACK de FIN después de {self.max_retries} intentos. Cerrando socket de todas formas.")
+                print(f"[CLOSE] Asumiendo que la contraparte se cerró. Cerrando conexión.")
+
         self.socket.close()
         print(f"Paquetes enviados: {self.packets_sent}")
         print(f"Paquetes recibidos: {self.packets_received}")
@@ -276,39 +301,79 @@ class SocketTCP:
         """
         print(f"[RECV_CLOSE] Esperando FIN del cliente...")
         
+        max_wait_attempts = 3
+        timeout_count = 0
+        fin_received = False
+        fin_seq = None
+        
         try:
             # Configurar timeout largo para esperar FIN
             self.socket.settimeout(10.0)
             
-            while True:
+            while not fin_received and timeout_count < max_wait_attempts:
+                try:
                 # Recibir segmento
-                segment, sender_address = self.socket.recvfrom(self.buffer_size)
-                segment_info = self.parse_segment(segment)
-                
-                # verificar si es FIN
-                if segment_info['fin']:
-                    seq_num = segment_info['seq']
-                    print(f"[RECV_CLOSE] FIN recibido con Seq: {seq_num}")
+                    segment, sender_address = self.socket.recvfrom(self.buffer_size)
+                    segment_info = self.parse_segment(segment)
                     
-                    # Enviar ACK de FIN
-                    ack_segment = self.create_segment(
-                        seq=seq_num,
-                        data=b"",
-                        ack=True
-                    )
-                    self.socket.sendto(ack_segment, sender_address)
-                    print(f"[RECV_CLOSE] Enviado ACK de FIN.")
-                    return True
-                else:
-                    # Si recibe otros paquetes, segior esperando
-                    print(f"[RECV_CLOSE] Paquete recibido que no es FIN, ignorando.")
-                    continue
-        except socket.timeout:
-            print(f"[RECV_CLOSE] Timeout esperando FIN del cliente.")
-            return False
+                    # verificar si es FIN
+                    if segment_info['fin']:
+                        seq_num = segment_info['seq']
+                        print(f"[RECV_CLOSE] FIN recibido con Seq: {seq_num}")
+                        
+                        # Enviar ACK de FIN
+                        ack_segment = self.create_segment(
+                            seq=seq_num,
+                            data=b"",
+                            ack=True
+                        )
+                        self.socket.sendto(ack_segment, sender_address)
+                        print(f"[RECV_CLOSE] Enviado ACK de FIN.")
+                        return True
+                    else:
+                        # Si recibe otros paquetes, seguir esperando
+                        print(f"[RECV_CLOSE] Paquete recibido que no es FIN, ignorando.")
+                except socket.timeout:
+                    timeout_count += 1
+                    print(f"[RECV_CLOSE] Timeout esperando FIN ({timeout_count}/{max_wait_attempts})")
+            if not fin_received:
+                print(f"[RECV_CLOSE] No se recibió FIN después de {max_wait_attempts} intentos.")
+                return False
+            
+            print(f"[RECV_CLOSE] Esperando último ACK de cliente...")
+            timeout_count = 0
+            while timeout_count < max_wait_attempts:
+                try:
+                    self.socket.settimeout(self.timeout)
+                    segment, _ = self.socket.recvfrom(self.buffer_size)
+                    segment_info = self.parse_segment(ack_segment)
+                    
+                    if segment_info['ack']:
+                        print(f"[RECV_CLOSE] Último ACK recibido con Seq: {segment_info['seq']}.")
+                        return True
+                    elif segment_info['fin']:
+                        # Cliente reenvió FIN, reenviar ACK
+                        print(f"[RECV_CLOSE] FIN duplicado detectado, reenviando ACK.")
+                        ack_segment = self.create_segment(
+                            seq=fin_seq,
+                            data=b"",
+                            ack=True
+                        )
+                        self.socket.sendto(ack_segment, sender_address)
+
+
+                except socket.timeout:
+                    timeout_count += 1
+                    print(f"[RECV_CLOSE] Timeout esperando FIN del cliente.")
+            print(f"[RECV_CLOSE] No se recibió FIN después de {max_wait_attempts} intentos.")
+            return True
+        
         except Exception as e:
             print(f"[RECV_CLOSE] Error: {e}")
             return False
+
+
+
         
     
     @staticmethod
@@ -389,7 +454,7 @@ class SocketTCP:
         print(f"[CONNECT] Iniciando 3-way handshake con {address}")
         
         # de nuevo esta vaina de perdida ZZZ
-        SIMULATE_LOSS = True
+        SIMULATE_LOSS = False
         LOSS_RATE = 0.3
         # Paso 1: Enviar SYN
         self.seq_num = random.randint(0, 100)
@@ -476,7 +541,7 @@ class SocketTCP:
         print(f"[ACCEPT] Esperando conexión...")
         
         # Perdiendo la cabeza en hd chavales
-        SIMULATE_LOSS = True
+        SIMULATE_LOSS = False
         LOSS_RATE = 0.3
         
         # Paso 1: Esperar SYN del cliente
